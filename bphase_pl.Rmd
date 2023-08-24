@@ -1,0 +1,229 @@
+---
+title: "bphase_pl"
+author: "wanzhen"
+date: '2023-08-24'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load packages,message=FALSE,echo=FALSE,warning=FALSE}
+library("WaveletComp")
+library("ggplot2")
+library(tidyverse)
+library(patchwork)
+library(gridExtra)
+library(foreach)
+library(doParallel)
+```
+
+## 1.构造两固定相位差时间序列
+
+构造两个模拟时间序列，每个信号由2000个点组成，序列周期为200,也即频率为1/200,固定相位差为pi/100。这两个时间序列构造如下
+
+```{r conseries}
+cons_ts_pairs <- function(A,period,length,phasedif){
+  #构造时间序列数据，参数：信噪比，周期，时序长度，相位差：X上的位移
+  set.seed(1)
+  x <- A*periodic.series(start.period = period,length = length)+rnorm(length)
+  y <- A*periodic.series(start.period = period,phase=phasedif*period/(2*pi),length = length)+rnorm(length)
+  tsdf <- data.frame(x=x,y=y)
+  return(invisible(tsdf))
+}
+tspf1 <- cons_ts_pairs(3,200,2000,pi/100)
+```
+
+
+```{r plotseries}
+plot_ts_pairs <- function(ts_pairs){
+  #配对时序画图
+  par(mfrow = c(2,1),mar = c(3,4,1,2)+0.1)
+  plot(seq(1,dim(ts_pairs)[1]),ts_pairs[,1],type ="l",col="blue",xlab="",ylab="x")
+  plot(seq(1,dim(ts_pairs)[1]),ts_pairs[,2],type = "l",col="red",xlab="index",ylab="y")
+}
+```
+
+```{r tspf1_pl}
+plot_ts_pairs(tspf1)#相位差为0.0314
+```
+
+### 1.1计算小波交叉谱图
+```{r cohe,results='hide', message=FALSE,warning=FALSE}
+#小波交叉功率计算
+tswc <- analyze.coherency(tspf1,my.pair = c(1, 2),
+                          loess.span = 0,
+                          dt=1,dj=1/20,
+                          lowerPeriod = 32,
+                          upperPeriod = 512,
+                          make.pval = T,
+                          n.sim=10)
+```
+
+```{r plot.cross}
+#小波交叉谱图
+wc.image(tswc,n.levels = 250,legend.params = list(lab="cross-wavelet power levels"),timelab = "index",periodlab = "period")
+```
+
+
+### 1.2相位差图
+```{r phasedif}
+wc.sel.phases(tswc, sel.period = 200,only.sig = TRUE,which.sig = "wc",siglvl = 0.05,
+phaselim = c(-pi,+pi), ## default if legend.horiz = FALSE
+legend.coords = "topright", legend.horiz = FALSE,
+main = "", sub = "", timelab = "")
+abline(h=0)
+```
+
+```{r phase_true}
+#提取小波交叉谱计算得到的相位角差值函数（相位差）
+phase.diff.extra <- function(wc,sel.period){
+  row.closest.to.period <- which.min(abs(wc$Period-sel.period))
+  angle.series <- wc$Angle[row.closest.to.period,]
+#  lead.time <- sel.period*(angle.series/(2*pi))
+}
+phase_true <- mean(phase.diff.extra(tswc,200))#差真实相位差为pi/100=0.0314,相差一个采样点
+phase_true#两序列带噪声模拟相位
+```
+
+将距两序列联合显著的周期200最小值的周期截取，计算在该周期上的相位差在每个时间点上的变化，相位差图显示两序列的相位差在0处上下波动，连续且较为平稳，说明两序列在周期200（频率1/200）上的相位差恒定。
+
+
+## 2.block bootstrap
+
+- 通过平移时间序列消除两序列间的相位差（可能存在的问题，平移的长度非整数点）
+- 将X按周期200划分序列2000为10段，构造200*10的连续序列矩阵，从中随机不放回抽取10列，再转换成向量的方式，实现X序列按周期长度重排
+- 使用foreach包和%dopar%函数分解循环计算小波相位角差值的任务
+
+```{r paral}
+#并行计算简化程序
+dfphase <- function(times,x,y,phase.diff_fun){
+  #传入参数:循环次数,需要计算小波相位角差值的两个时间序列
+  cl <- makeCluster(detectCores())#设置并行环境
+  registerDoParallel(cl)#设置为使用所有可用处理器核心
+  #创建任务
+  result <- foreach(i = 1:times,.combine='cbind') %dopar% {
+    library(WaveletComp)
+    sequence <- 1:length(x)
+    # 将序列按照长度200为标准进行分块,分块数为50
+    blocks <- matrix(sequence, nrow = 200)
+    # 执行任务
+    # 对分块进行随机重组产生新的排列顺序
+    new_blocks <- c(blocks[, sample(ncol(blocks))])
+    x_train <- x[new_blocks]
+    tempwc <- analyze.coherency(data.frame(x=x_train,y=y),my.pair = c("x","y"),
+                            loess.span = 0,
+                            dt=1,dj=1/20,
+                            lowerPeriod = 32,
+                            upperPeriod = 512,
+                            make.pval = T,
+                            n.sim=10)
+    #计算两时序在周期为200附近的小波相位角差值
+    temphase <- phase.diff_fun(tempwc,200)
+    invisible(temphase)
+  }
+  stopCluster(cl)#关闭进程
+  return(result)
+}
+```
+
+
+### 2.1实验次数100次
+
+```{r dfphase_100}
+#将x向左平移pi/100,恰好1个采样点,同时在序列尾部补充1个0
+x_rec <- c(tspf1$x[2:2000],rep(0,1))
+dfphase_100 <- dfphase(100,x_rec,tspf1$y,phase.diff.extra)
+```
+
+
+```{r hist.dfphase_100}
+#每次重抽样计算的相位差平均后的直方图
+histmphase <- function(data,times,phasedif,length){
+  par(mai=c(1,1,0.5,0.5))
+  hist(colMeans(data),breaks=30,xlab=paste(times,'times,','length',length),main = paste("Histogram of phasedif",round(phasedif,6)))
+  abline(v=quantile(colMeans(data),0.95),col='red',lwd=2)#95%分位数
+  abline(v= quantile(colMeans(data),0.05,lwd=2))#5%分位数
+}
+histmphase(dfphase_100,100,pi/100,2000)
+```
+
+```{r type_I_error}
+type_I_error <- sum(colMeans(dfphase_100)<phase_true)/dim(dfphase_100)[2]
+type_I_error#实验100次type_I_error
+```
+
+### 2.2实验次数1000次
+```{r dfphase_1000,cache=TRUE}
+dfphase_1000 <- dfphase(1000,x_rec,tspf1$y,phase.diff.extra)
+#每次计算的相位差平均后的直方图
+histmphase(dfphase_1000,1000,pi/100,2000)
+```
+
+```{r p_value_1000}
+type_I_error <- sum(colMeans(dfphase_1000)<phase_true)/dim(dfphase_1000)[2]
+type_I_error
+```
+
+### 2.3相同序列长度&不同相位差平移后bootstrap分布
+```{r phasetest,message=FALSE,results='hide',cache=TRUE}
+test_phasedif <- c(pi/100,pi/50,3*pi/100,pi/25)
+true_phase <- c()
+type_I_error <- c()
+q_0.05 <- c()
+q_0.95 <- c()
+par(mfrow = c(2,2),mar=c(2.1,2.1,2.1,2.1))
+for (i in test_phasedif){
+    tspf <- cons_ts_pairs(3,200,2000,i)#相位差为i,相差采样点i*100/pi个
+    tswc <- analyze.coherency(tspf,my.pair = c(1, 2),
+                            loess.span = 0,
+                            dt=1,dj=1/20,
+                            lowerPeriod = 32,
+                            upperPeriod = 512,
+                            make.pval = T,
+                            n.sim=10)
+    temp_phase <- mean(phase.diff.extra(tswc,200))#计算真实相位差
+    true_phase <- append(true_phase,temp_phase)
+    dot_diff <- i*100/pi#采样点相差个数
+    x_rec <- c(tspf$x[(dot_diff+1):2000],rep(0,dot_diff))#平移X消除相位差
+    boot_phase <- dfphase(1000,x_rec,tspf$y,phase.diff.extra)#bootstrap重抽样1000次虚拟得到的相位差均值分布
+    histmphase(boot_phase,1000,i,2000)
+    q_0.05 <- append(q_0.05,quantile(colMeans(boot_phase),0.05))#计算分布的5%分位数
+    q_0.95 <- append(q_0.95,quantile(colMeans(boot_phase),0.95))#计算分布的95%分位数
+    type_I_error <- append(type_I_error,sum(colMeans(boot_phase)<temp_phase)/dim(boot_phase)[2])#计算bootstrap分布中相位差type_I_error
+}
+``` 
+
+```{r resultdf}
+bootdata <- data.frame(phasedif = test_phasedif,type_I_error=type_I_error,q_0.05=q_0.05,q_0.95=q_0.95)
+bootdata
+```
+
+### 2.4 不同序列长度&相同相位差平移后bootstrap分布
+```{r lengthtest,message=FALSE,results='hide',cache=TRUE}
+test_length <- c(1000,2000,3000,5000)
+true_phase1 <- c()
+type_I_error1 <- c()
+q1_0.05 <- c()
+q1_0.95 <- c()
+par(mfrow = c(2,2),mar=c(2.1,2.1,2.1,2.1))
+for (i in test_length){
+    tspf <- cons_ts_pairs(3,200,i,pi/100)#相位差为pi/100,相差一个采样点
+    tswc1 <- analyze.coherency(tspf,my.pair = c(1, 2),
+                            loess.span = 0,
+                            dt=1,dj=1/20,
+                            lowerPeriod = 32,
+                            upperPeriod = 512,
+                            make.pval = T,
+                            n.sim=10)
+    temp_phase <- mean(phase.diff.extra(tswc1,200))#计算真实相位差
+    true_phase1 <- append(true_phase,temp_phase)
+    x_rec <- c(tspf$x[2:i],rep(0,1))#X平移一个采样点消除相位差q
+    boot_phase <- dfphase(1000,x_rec,tspf$y,phase.diff.extra)#bootstrap重抽样1000次虚拟得到的相位差均值分布
+    histmphase(boot_phase,1000,pi/100,i)
+    q1_0.05 <- append(q_0.05,quantile(colMeans(boot_phase),0.05))#计算分布的5%分位数
+    q1_0.95 <- append(q_0.95,quantile(colMeans(boot_phase),0.95))#计算分布的95%分位数
+    type_I_error1 <- append(type_I_error1,sum(colMeans(boot_phase)<temp_phase)/dim(boot_phase)[2])#计算bootstrap分布中相位差type_I_error
+}
+``` 
