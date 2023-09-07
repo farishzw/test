@@ -196,13 +196,14 @@ for (i in test_phasedif){
 ``` 
 
 ```{r resultdf}
+#序列长度为1000时不同相位差下bootstrap分布数据
 bootdata <- data.frame(phasedif = test_phasedif,type_I_error=type_I_error,q_0.05=q_0.05,q_0.95=q_0.95)
 bootdata
 ```
 
 ### 2.4 不同序列长度&相同相位差平移后bootstrap分布
 ```{r lengthtest,message=FALSE,results='hide',cache=TRUE}
-test_length <- c(1000,2000,3000,5000)
+test_length <- c(1000,2000,3000,5000)#设置不同序列长度
 true_phase1 <- c()
 type_I_error1 <- c()
 q1_0.05 <- c()
@@ -222,8 +223,15 @@ for (i in test_length){
     x_rec <- c(tspf$x[2:i],rep(0,1))#X平移一个采样点消除相位差q
     boot_phase <- dfphase(1000,x_rec,tspf$y,phase.diff.extra)#bootstrap重抽样1000次虚拟得到的相位差均值分布
     histmphase(boot_phase,1000,pi/100,i)
-    q1_0.05 <- append(q_0.05,quantile(colMeans(boot_phase),0.05))#计算分布的5%分位数
-    q1_0.95 <- append(q_0.95,quantile(colMeans(boot_phase),0.95))#计算分布的95%分位数
+    q1_0.05 <- append(q1_0.05,quantile(colMeans(boot_phase),0.05))#计算分布的5%分位数
+    q1_0.95 <- append(q1_0.95,quantile(colMeans(boot_phase),0.95))#计算分布的95%分位数
     type_I_error1 <- append(type_I_error1,sum(colMeans(boot_phase)<temp_phase)/dim(boot_phase)[2])#计算bootstrap分布中相位差type_I_error
 }
 ``` 
+
+
+```{r lengthdf}
+#相同相位差pi/100,不同序列长度下bootstrap分布数据
+lengthdata <- data.frame(tslength = test_length,type_I_error = type_I_error1,q_0.05=q1_0.05,q_0.95=q1_0.95)
+lengthdata
+```

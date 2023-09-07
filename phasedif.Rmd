@@ -1,0 +1,108 @@
+---
+title: "phasedif"
+output: html_document
+date: "2023-09-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1.相位差检验
+
+## 1.1时序构造
+造两个时序$$x=sin(2\pi f_x t)+GWN(0,1)$$ $$y=sin(2\pi f_xt-\frac{\pi}{5})+GWN(0,1)$$ 两时间序列的相位差为$\frac{\pi}{5}\simeq 0.6283$
+
+```{r conseries}
+cons_ts_pairs <- function(A,period,length,phasedif){
+  #构造时间序列数据，参数：信噪比，周期，时序长度，相位差：X上的位移
+  set.seed(1)
+  x <- A*periodic.series(start.period = period,length = length)+rnorm(length)
+  y <- A*periodic.series(start.period = period,phase=phasedif*period/(2*pi),length = length)+rnorm(length)
+  tsdf <- data.frame(x=x,y=y)
+  return(invisible(tsdf))
+}
+tsG1=cons_ts_pairs(1,50,1000,-pi/5)
+```
+
+### 时间序列图
+
+```{r plotseries,echo=FALSE}
+par(mfrow = c(2,1),mar = c(3,4,1,2)+0.1)
+plot(seq(1,1000),tsG1[,1],type ="l",col="blue",xlab="",ylab="x",main="phasediff pi/5")
+plot(seq(1,1000),tsG1[,2],type = "l",col="red",xlab="index",ylab="y")#相位差为pi/5
+```
+
+### 相位差为$\frac{pi}{5}$的相位差图
+
+```{r phasedif5,results='hide',echo=FALSE}
+#小波交叉功率计算
+tswcG1 <- analyze.coherency(tsG1,my.pair = c(1, 2),
+                          loess.span = 0,
+                          dt=1,dj=1/20,
+                          lowerPeriod = 2,
+                          upperPeriod =128,
+                          make.pval = T,
+                          n.sim=10)
+wc.sel.phases(tswcG1, sel.period = 50,only.sig = TRUE,which.sig = "wc",siglvl = 0.05,
+phaselim = c(-pi,+pi), ## default if legend.horiz = FALSE
+legend.coords = "topright", legend.horiz = FALSE,
+main = "phasediff of pi/5", sub = "", timelab = "")
+abline(h=0)
+```
+
+
+### 两序列相位差直方图
+
+```{r histphaseG1}
+phase_dis <- phase.diff.extra(tswcG1,50)
+hist(phase_dis,breaks=30,main = paste("phase difference of pi/5",'sample mean=',round(mean(phase_dis),4)),xlab='')
+```
+
+**两时间序列原始的相位差分布较为平均，在0.4和0.6处有尖峰，造成原因可能是相位差0.628叠加随机因素的影响**
+
+## 1.2两序列重抽样1000次相位差直方图
+
+```{r bootphaseG1}
+#重抽样100次
+bootphaseG1_1000 <- bphase(1000,tsG1$x,tsG1$y,phase.diff.extra)
+hist(bootphaseG1_1000,breaks=30,main = paste("bootstrap phase difference of pi/5"),xlab='')#重抽样100次相位差分布
+```
+
+**对原始时间序列进行重抽样1000次，相位差近似正态分布,均值为0.6568**
+
+### 两序列消除相位差
+
+- 通过平移y序列相位差个单位，使得修正后的y_rec与x的相位差理论上为0，即符合原假设的情形
+- 对x重抽样，计算每一次重抽样后与y_rec的相位差序列，画出重抽样相位差分布，构造出了符合原假设phasedif=0的相位差分布
+
+```{r shiftphasedif}
+#消除相位差
+y_rec <- c(tsG1$y[6:1000],rep(0,5))
+recphase <- bphase(1000,tsG1$x,y_rec,phase.diff.extra)
+hist(recphase,breaks=30,main = paste("bootstrap phase difference after shift"),xlab='')#重抽样100次相位差分布
+```
+
+**平移后时间序列的相位差直方图仍近似呈正态分布，均值为0.0278**
+
+### 重抽样相位差均值分布
+
+我们感兴趣的统计量为相位差均值，对于构造出的符合原假设的重抽样相位差序列求均值，得到符合原假设的相位差均值分布
+```{r}
+#计算重抽样相位差均值
+matrix_recphase <- matrix(recphase, nrow = 1000)
+# 计算每行的均值
+row_recmeans <- apply(matrix_recphase, 1, mean)
+hist(row_recmeans,breaks=30,main = paste("bootstrap mean phase difference after shift"),xlab='')#重抽样100次相位差分布
+```
+
+**相位差为0均值分布未呈现明显的趋势，大致关于0中心对称**
+
+### type_I_error
+
+```{r critical_value}
+alpha = 0.05  # 显著性水平
+quantile(row_recmeans,probs=c(alpha/2,1-alpha/2))# 计算临界值
+sum(row_recmeans>mean(phase_dis))/length(row_recmeans)# type_I_error
+```
+根据消除相位差后重抽样得到的相位差0的均值分布，在0.05显著性水平下，得到拒绝原假设的临界值，以及原始相位差为$\frac{pi}{5}$时在均值分布中的$p$值为0<0.05，即原始x,y时间序列的相位差显著不为0

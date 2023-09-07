@@ -1,0 +1,170 @@
+---
+title: "samplecase"
+output: html_document
+date: "2023-08-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load packages,message=FALSE,echo=FALSE,warning=FALSE}
+library("WaveletComp")
+library("ggplot2")
+library(tidyverse)
+library(patchwork)
+library(gridExtra)
+library(foreach)
+library(doParallel)
+```
+# 1.时间序列参数设置
+- 周期50，即频率1/50
+- 序列长度100
+```{r ts,echo=FALSE}
+cons_ts_pairs <- function(A,period,length,phasedif){
+  #构造时间序列数据，参数：信噪比，周期，时序长度，相位差：X上的位移
+  set.seed(1)
+  x <- A*periodic.series(start.period = period,length = length)+rnorm(length)
+  y <- A*periodic.series(start.period = period,phase=phasedif*period/(2*pi),length = length)+rnorm(length)
+  tsdf <- data.frame(x=x,y=y)
+  return(invisible(tsdf))
+}
+```
+
+### 时间序列图
+```{r,echo=FALSE}
+par(mfrow = c(2,1),mar = c(3,4,1,2)+0.1)
+plot(seq(1,dim(tsdf)[1]),tsdf$x,type ="l",col="blue",xlab="",ylab="x")
+plot(seq(1,dim(tsdf)[1]),tsdf$y,type = "l",col="red",xlab="index",ylab="y")
+```
+
+### 相位差图
+```{r phasedif,results='hide',echo=FALSE}
+#相位差计算
+phasecal <- function(tsdf,sel.period){
+  tempwc <- analyze.coherency(tsdf,my.pair=c(1,2),
+                              loess.span = 0,
+                              dt=1,dj=1/20,
+                              lowerPeriod=2,
+                              upperPeriod=128,
+                              make.pval = T,
+                              n.sim=10)
+  #提取小波交叉谱计算相位角差值函数（相位差）
+  row.closest.to.period <- which.min(abs(tempwc$Period-sel.period))
+  angle.series <- tempwc$Angle[row.closest.to.period,]
+#  lead.time <- sel.period*(angle.series/(2*pi))
+}
+  
+#相位差图
+tswc <- analyze.coherency(ts_matrix[1],my.pair=c(1,2),
+                              loess.span = 0,
+                              dt=1,dj=1/20,
+                              lowerPeriod=2,
+                              upperPeriod=128,
+                              make.pval = T,
+                              n.sim=10)
+wc.sel.phases(tswc, sel.period = 50,only.sig = TRUE,which.sig = "wc",siglvl = 0.05,phaselim = c(-pi,+pi), 
+legend.coords = "topright", legend.horiz = FALSE,
+main = "", sub = "", timelab = "")
+abline(h=0)
+```
+
+### 相位差序列直方图
+```{r histphase,results='hide',echo=FALSE}
+phase_1000 <- phasecal(tsdf,50)
+phase_3000 <- phasecal(tsdf_3000,50)
+phase_5000 <- phasecal(tsdf_5000,50)
+par(mfrow = c(3,1),mar = c(3.8,4,1,2)+0.1,cex.lab=0.8)
+hist(phase_1000,breaks=30,main = paste("phase difference 0"),xlab='length 1000')
+hist(phase_3000,breaks=30,main="",xlab="length 3000")
+hist(phase_5000,breaks=30,main="",xlab="length 5000")
+```
+
+
+```{r phasedf,echo=FALSE}
+data.frame(phase_1000_range=c(range(phase_1000),abs(range(phase_1000)[1]-range(phase_1000)[2])),
+           phase_3000_range=c(range(phase_3000),abs(range(phase_3000)[1]-range(phase_3000)[2])),
+           phase_5000_range=c(range(phase_5000),abs(range(phase_5000)[1]-range(phase_5000)[2])),
+           row.names = c("min","max","width"))
+```
+
+```{r paral,echo=FALSE}
+phase.diff.extra <- function(wc,sel.period){
+  row.closest.to.period <- which.min(abs(wc$Period-sel.period))
+  angle.series <- wc$Angle[row.closest.to.period,]
+#  lead.time <- sel.period*(angle.series/(2*pi))
+}
+#重抽样函数
+bphase <- function(times,x,y,phase.diff_fun){
+  #传入参数:循环次数,需要计算小波相位角差值的两个时间序列
+  cl <- makeCluster(detectCores())#设置并行环境
+  registerDoParallel(cl)#设置为使用所有可用处理器核心
+  #创建任务
+  result <- foreach(i = 1:times,.combine='cbind') %dopar% {
+    library(WaveletComp)
+    sequence <- 1:length(x)
+    # 将序列按照长度50为标准进行分块,分块数为20
+    blocks <- matrix(sequence, nrow = 50)
+    # 执行任务
+    # 对分块进行随机重组产生新的排列顺序
+    new_blocks <- c(blocks[, sample(ncol(blocks))])
+    x_train <- x[new_blocks]
+    tempwc <- analyze.coherency(data.frame(x=x_train,y=y),my.pair = c("x","y"),
+                            loess.span = 0,
+                            dt=1,dj=1/20,
+                            lowerPeriod = 2,
+                            upperPeriod = 128,
+                            make.pval = T,
+                            n.sim=10)
+    #计算两时序在周期为50附近的小波相位角差值
+    temphase <- phase.diff_fun(tempwc,50)
+    invisible(temphase)
+  }
+  stopCluster(cl)#关闭进程
+  return(result)
+}
+```
+
+### 重抽相位差分布图
+```{r bootphase}
+#重抽样1000次
+bootphase_1000 <- bphase(1000,tsdf$x,tsdf$y,phase.diff.extra)
+bootphase_3000 <- bphase(1000,tsdf_3000$x,tsdf_3000$y,phase.diff.extra)
+bootphase_5000 <- bphase(1000,tsdf_5000$x,tsdf_5000$y,phase.diff.extra)
+par(mfrow = c(3,1),mar = c(3.8,4,1,2)+0.1,cex.lab=0.8)
+hist(bootphase_1000,breaks=30,main = paste("bootstrap phase difference"),xlab='length 1000')#重抽样1000次相位差分布
+hist(bootphase_3000,breaks=30,main="",xlab="length 3000")
+hist(bootphase_5000,breaks=30,main="",xlab="length 5000")
+```
+
+
+```{r bphasedf,echo=FALSE}
+data.frame(bootphase_1000_range=c(range(bootphase_1000),abs(range(bootphase_1000)[1]-range(bootphase_1000)[2])),
+           bootphase_3000_range=c(range(bootphase_3000),abs(range(bootphase_3000)[1]-range(bootphase_3000)[2])),
+           bootphase_5000_range=c(range(bootphase_5000),abs(range(bootphase_5000)[1]-range(bootphase_5000)[2])),
+           row.names = c("min","max","width"))
+```
+
+### 重抽样相位差均值分布图
+```{r}
+#计算重抽样相位差均值
+phase_matrix <- matrix(bootphase_1000, nrow = 1000)
+# 计算每行的均值
+row_means <- apply(phase_matrix, 1, mean)
+phase_matrix_3000 <- matrix(bootphase_3000,nrow=1000)
+row_means_3000 <- apply(phase_matrix_3000,1,mean)
+phase_matrix_5000 <- matrix(bootphase_5000,nrow=1000)
+row_means_5000 <- apply(phase_matrix_5000,1,mean)
+par(mfrow = c(3,1),mar = c(3.8,4,1,2)+0.1,cex.lab=0.8)
+hist(row_means,breaks=30,main = paste("bootstrap mean phase difference 0"),xlab='length 1000')#重抽样100次相位差均值的分布
+hist(row_means_3000,breaks=30,main="",xlab="length 3000")
+hist(row_means_5000,breaks=30,main="",xlab="length 5000")
+```
+
+
+```{r bmphasedf,echo=FALSE}
+data.frame(bootmeanphase_1000_range=c(range(row_means),abs(range(row_means)[1]-range(row_means)[2])),
+           bootmeanphase_3000_range=c(range(row_means_3000),abs(range(row_means_3000)[1]-range(row_means_3000)[2])),
+           bootmeanphase_5000_range=c(range(row_means_5000),abs(range(row_means_5000)[1]-range(row_means_5000)[2])),
+           row.names = c("min","max","width"))
+```
